@@ -4,10 +4,14 @@
  * are made available under the terms of the GNU Public License v3.0
  * which accompanies this distribution, and is available at
  * http://www.gnu.org/licenses/gpl.html
- * 
+ *
  * Contributors:
  *     @NT2005 - initial API and implementation
+ * Fork:
+ *     LoadLow - SecureRandom and anonymous login etc..
  ******************************************************************************/
+package nz.co.mega.api;
+
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -43,29 +47,67 @@ import java.security.PrivateKey;
 import java.security.spec.RSAPrivateKeySpec;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.Random;
-
-
-
 
 public class MegaHandler {
 
-	private String email, password, sid;
+	private String sid;
 	private int sequence_number;
 	private long[] master_key;
 	private BigInteger[] rsa_private_key;
 	private long[] password_aes;
-	HashMap<String,long[]> user_keys = new HashMap<String,long[]>();
+	private HashMap<String,long[]> user_keys = new HashMap<String,long[]>();
 
-	public MegaHandler(String email, String password) {
-		this.email = email;
-		this.password = password;
-		Random rg = new Random();
-		sequence_number = rg.nextInt(Integer.MAX_VALUE);
-	}
+    public MegaHandler() {
+        sequence_number = MegaCrypt.generate_sequence();
+    }
 
-	public int login() throws IOException {
+    public int loginAnonymously() throws IOException {
+        long[] master_key = MegaCrypt.generate_key();
+        this.password_aes = MegaCrypt.generate_key();
+        long[] session_self_challenge = MegaCrypt.generate_key();
 
+        JSONObject json = new JSONObject();
+        try {
+            json.put("a", "up");
+            json.put("k", MegaCrypt.a32_to_base64(MegaCrypt.encrypt_key(master_key, password_aes)));
+            json.put("ts", MegaCrypt.base64_url_encode(
+                    MegaCrypt.a32_to_str(session_self_challenge)
+                  + MegaCrypt.a32_to_str(MegaCrypt.encrypt_key(session_self_challenge, master_key))
+            ));
+        } catch (JSONException e) {
+            e.printStackTrace();
+        }
+
+        String user = api_request(json.toString());
+        user = user.substring(1, user.toString().length() - 1);
+        json = new JSONObject();
+        try {
+            json.put("a", "us");
+            json.put("user", user);
+        } catch (JSONException e) {
+            e.printStackTrace();
+        }
+
+        while (true) {
+            String response = api_request(json.toString());
+
+            if (isInteger(response))
+                return Integer.parseInt(response);
+
+            try {
+                if (login_process(new JSONObject(response), password_aes) != -2) {
+                    break;
+                }
+            } catch (JSONException e) {
+                e.printStackTrace();
+            }
+        }
+
+        return 0;
+    }
+
+
+	public int login(String email, String password) throws IOException {
 		password_aes = MegaCrypt.prepare_key_pw(password);
 		String uh = MegaCrypt.stringhash(email, password_aes);
 
@@ -109,8 +151,23 @@ public class MegaHandler {
 
 		long[] encrypted_master_key = MegaCrypt.base64_to_a32(master_key_b64);
 		master_key = MegaCrypt.decrypt_key(encrypted_master_key, password_aes);
-
-		if (json.has("csid")) {
+        if(json.has("tsid")) {
+            try {
+                String tsid = MegaCrypt.base64_url_decode(json.getString("tsid"));
+                String key_encrypted = MegaCrypt.a32_to_str(MegaCrypt.encrypt_key(
+                                MegaCrypt.str_to_a32(tsid.substring(0, 16)),
+                                master_key
+                ));
+                if (key_encrypted.equals(tsid.substring(tsid.length()-16))) {
+                    this.sid = json.getString("tsid");
+                    return 0;
+                }
+            } catch (JSONException e) {
+                e.printStackTrace();
+                return -2;
+            }
+        }
+        else if (json.has("csid")) {
 			String encrypted_rsa_private_key_b64 = null;
 			try {
 				encrypted_rsa_private_key_b64 = json.getString("privk");
@@ -146,8 +203,7 @@ public class MegaHandler {
 				cipher.init(Cipher.DECRYPT_MODE, privateKey);
 				// PyCrypt can handle >256 bit length... what the fuck... sometimes i get 257
 				if (encrypted_sid.toByteArray().length > 256) {
-					Random rg = new Random();
-					sequence_number = rg.nextInt(Integer.MAX_VALUE);
+					sequence_number = MegaCrypt.generate_sequence();
 					return -2;  // lets get a new seession
 				}
 				sid = new BigInteger(cipher.doFinal(encrypted_sid.toByteArray()));
@@ -187,12 +243,11 @@ public class MegaHandler {
 		try {
 			json.put("a", "uq");
 			json.put("xfer", 1);
-			
+            return new JSONObject(api_request(json.toString())).getLong("mstrg");
 		} catch (JSONException e) {
 			e.printStackTrace();
+            return -1;
 		}
-		
-		return new JSONObject(api_request(json.toString())).getLong("mstrg");
 	}
 
 	public String get_user() {
@@ -433,9 +488,7 @@ public class MegaHandler {
 				if (in != null)
 					in.close();
 			}
-
 			return response.toString().substring(1, response.toString().length() - 1);
-
 
 		} catch (IOException e) {
 			e.printStackTrace();
@@ -473,7 +526,7 @@ public class MegaHandler {
 
 
 
-	public void download(String url, String path) throws NoSuchAlgorithmException, NoSuchPaddingException, InvalidKeyException, InvalidAlgorithmParameterException, IOException, IllegalBlockSizeException, BadPaddingException{
+	public void download(String url, String path) throws JSONException, NoSuchAlgorithmException, NoSuchPaddingException, InvalidKeyException, InvalidAlgorithmParameterException, IOException, IllegalBlockSizeException, BadPaddingException{
 		//TODO DOWNLOAD mismatch?
 		print("Download started");
 		String[] s = url.split("!");
@@ -508,10 +561,11 @@ public class MegaHandler {
 		final SecretKeySpec skeySpec = new SecretKeySpec(key, "AES");
 		Cipher cipher = Cipher.getInstance("AES/CTR/nopadding");
 		cipher.init(Cipher.ENCRYPT_MODE, skeySpec, ivSpec);
+
 		InputStream is = null;
 		String file_url = file_data.getString("g");
-
-		FileOutputStream fos = new FileOutputStream(path+File.separator+file_name);
+        String destFile=path.isEmpty()?file_name:path + File.separator + file_name;
+        FileOutputStream fos = new FileOutputStream(destFile);
 		final OutputStream cos = new CipherOutputStream(fos, cipher);
 		final Cipher decipher = Cipher.getInstance("AES/CTR/NoPadding");
 	    decipher.init(Cipher.ENCRYPT_MODE, skeySpec, ivSpec);

@@ -4,10 +4,14 @@
  * are made available under the terms of the GNU Public License v3.0
  * which accompanies this distribution, and is available at
  * http://www.gnu.org/licenses/gpl.html
- * 
+ *
  * Contributors:
  *     @NT2005 - initial API and implementation
+ * Fork:
+ *     LoadLow - SecureRandom and anonymous login etc..
  ******************************************************************************/
+package nz.co.mega.api;
+
 import javax.crypto.Cipher;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
@@ -20,17 +24,30 @@ import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
+import java.security.SecureRandom;
 import java.util.Arrays;
+import java.util.Random;
+
 
 public class MegaCrypt {
 	private static final char[] CA = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".toCharArray();
 	private static final int[] IA = new int[256];
+    private static final Random RAND = new SecureRandom();
 	static {
 		Arrays.fill(IA, -1);
 		for (int i = 0, iS = CA.length; i < iS; i++)
 			IA[CA[i]] = i;
 		IA['='] = 0;
 	}
+
+    public static long[] generate_key() {
+        long subKey = generate_sequence();
+        return new long[] { subKey, subKey, subKey, subKey };
+    }
+
+    public static int generate_sequence() {
+        return RAND.nextInt(Integer.MAX_VALUE);
+    }
 	
     public static long[] prepare_key_pw(String password) {
         return prepare_key(str_to_a32(password));
@@ -141,6 +158,19 @@ public class MegaCrypt {
         return sum;
     }
 
+    public static long[] encrypt_key(long[] a, long[] key) {
+
+        long[] sum = new long[a.length];
+        for (int i = 0; i < a.length; i += 4) {
+            long[] part = aes_cbc_encrypt_a32(Arrays.copyOfRange(a, i, i + 4), key);
+            for (int j = i; j < i + 4; j++) {
+                sum[j] = part[j - i];
+            }
+        }
+
+        return sum;
+    }
+
     public static long[] str_to_a32(String string) {
         if (string.length() % 4 != 0) {
             string += new String(new char[4 - string.length() % 4]);
@@ -192,21 +222,6 @@ public class MegaCrypt {
 
         return data;
     }
-
-/*    public static String base64_url_decode(String data) {
-        data = data.replaceAll("-", "\\+");
-        data = data.replaceAll("_", "/");
-        data = data.replaceAll(",", "");
-        //for (int i = 0;i<4-(data.length()%4);++i)
-        data += "==";
-
-        try {
-            return new String(Base64.decodeBase64(data.getBytes("ISO-8859-1")), "ISO-8859-1");
-        } catch (UnsupportedEncodingException e) {
-            e.printStackTrace();
-        }
-        return "";
-    }*/
 
     public static String a32_to_base64(long[] a) {
         return base64_url_encode(a32_to_str(a));

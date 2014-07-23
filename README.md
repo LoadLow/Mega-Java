@@ -18,8 +18,13 @@ Import MegaJava and json library on your project
 
 ###Login (you need this step before do anything)
 ```java
-MegaHandler mh = new MegaHandler("user@mail.com", "password");
-mh.login();
+MegaHandler mh = new MegaHandler();
+mh.login("user@mail.com", "password");
+```
+###Or Login anonymously
+```java
+MegaHandler mh = new MegaHandler();
+mh.loginAnonymously();
 ```
 ###Get user details
 ```java
